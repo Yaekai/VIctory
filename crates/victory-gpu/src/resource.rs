@@ -245,11 +245,13 @@ pub(crate) fn pc_format(format: u32) -> u32 {
 pub(crate) fn target_format(format: u32) -> u32 {
     const R9G9B9E5_SHAREDEXP: u32 = 67;
     const RGBA16_FLOAT: u32 = 10;
-    let format = pc_format(format);
-    if format == R9G9B9E5_SHAREDEXP {
-        RGBA16_FLOAT
-    } else {
-        format
+    const B5G5R5A1_UNORM: u32 = 86;
+    const B4G4R4A4_UNORM: u32 = 115;
+    const RGBA8_UNORM: u32 = 28;
+    match pc_format(format) {
+        R9G9B9E5_SHAREDEXP => RGBA16_FLOAT,
+        B5G5R5A1_UNORM | B4G4R4A4_UNORM => RGBA8_UNORM,
+        other => other,
     }
 }
 
@@ -286,6 +288,25 @@ pub(crate) fn family(format: u32) -> u32 {
             .iter()
             .find(|&&(first, last)| (first..=last).contains(&f))
             .map_or(f, |&(first, _)| first),
+    }
+}
+
+/// Whether a DXGI format is typeless (the root of a multi-format family).
+pub(crate) fn is_typeless(format: u32) -> bool {
+    format
+        .checked_add(1)
+        .is_some_and(|next| family(format) == format && family(next) == format)
+}
+
+/// The first concrete (typed) format in a typeless format's family.
+/// If `format` is already concrete or has no family, returns `format` unchanged.
+pub(crate) fn first_concrete(format: u32) -> u32 {
+    match format {
+        90 => 87, // DXGI_FORMAT_B8G8R8A8_TYPELESS -> DXGI_FORMAT_B8G8R8A8_UNORM
+        92 => 88, // DXGI_FORMAT_B8G8R8X8_TYPELESS -> DXGI_FORMAT_B8G8R8X8_UNORM
+        39 => 41, // DXGI_FORMAT_R32_TYPELESS -> DXGI_FORMAT_R32_FLOAT (skip 40: D32_FLOAT)
+        f if is_typeless(f) => f + 1,
+        f => f,
     }
 }
 
@@ -2566,5 +2587,26 @@ void main() {
             assert_eq!(view_format(out), None, "flags {flags}");
             assert_eq!(slot::<Release>(out, 0x10)(out), 0);
         }
+    }
+
+    #[test]
+    fn typeless_detection_and_concrete_mapping() {
+        assert!(is_typeless(27));
+        assert_eq!(first_concrete(27), 28);
+
+        assert!(is_typeless(90));
+        assert_eq!(first_concrete(90), 87);
+
+        assert!(is_typeless(92));
+        assert_eq!(first_concrete(92), 88);
+
+        assert!(is_typeless(39));
+        assert_eq!(first_concrete(39), 41);
+
+        assert!(!is_typeless(28));
+        assert_eq!(first_concrete(28), 28);
+
+        assert!(!is_typeless(87));
+        assert_eq!(first_concrete(87), 87);
     }
 }
