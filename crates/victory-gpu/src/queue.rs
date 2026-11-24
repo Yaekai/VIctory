@@ -152,13 +152,17 @@ extern "system" fn execute(this: This, count: u32, lists: *const This) {
     }
 }
 
-/// The start of a present plane: frame token, then the plane's resources.
+/// One plane of a `PresentX` call (`D3D12XBOX_PRESENT_PLANE_PARAMETERS`,
+/// 0x48 bytes): frame token, resource array, view rects, color space,
+/// extended descriptors, and plane flags.
 #[repr(C)]
 pub(crate) struct Plane {
     token: u64,
     count: u32,
     resources: *const This,
+    _rest: [u64; 6],
 }
+const _: () = assert!(std::mem::size_of::<Plane>() == 0x48);
 /// Submission tagged with the frame it belongs to `(count, lists, frame
 /// token, flags)`; frames are paced elsewhere, so it runs as a plain one.
 extern "system" fn execute_x(this: This, count: u32, lists: *const This, _token: u64, _flags: u32) {
@@ -344,19 +348,40 @@ fn show(resource: Option<object::Held>) {
         crate::capture::dump_targets(frame);
     }
     #[cfg(windows)]
-    if let Some(resource) = resource.as_ref().map(object::Held::get)
-        && let Some(texture) = crate::resource::host_resource(resource)
+    if planes > 0
+        && !plane_parameters.is_null()
         && let Some(host) = crate::host::host()
     {
         const COPY_SOURCE: u32 = 0x800;
-        let state = crate::resource::host_transition(resource, COPY_SOURCE)
-            .map_or(COPY_SOURCE, |(_, before)| before);
-        let shown = host.present(texture, state, frame);
-        crate::resource::host_transition(resource, state);
-        #[cfg(feature = "diagnostics")]
-        blinks(frame, resource, state, shown);
-        #[cfg(not(feature = "diagnostics"))]
-        let _ = shown;
+        // SAFETY: the title passes `planes` plane descriptions.
+        let slice = unsafe { std::slice::from_raw_parts(plane_parameters, planes.min(8) as usize) };
+        let mut resources = Vec::with_capacity(slice.len());
+        for plane in slice {
+            if plane.count == 0 || plane.resources.is_null() {
+                continue;
+            }
+            // SAFETY: the plane lists `count` resources.
+            let resource = unsafe { *plane.resources };
+            if let Some(texture) = crate::resource::host_resource(resource) {
+                let state = crate::resource::host_transition(resource, COPY_SOURCE)
+                    .map_or(COPY_SOURCE, |(_, before)| before);
+                resources.push((resource, texture, state));
+            }
+        }
+        if !resources.is_empty() {
+            let sources: Vec<(&_, u32)> = resources
+                .iter()
+                .map(|(_, tex, state)| (*tex, *state))
+                .collect();
+            let shown = host.present(&sources, frame);
+            for &(resource, _, state) in &resources {
+                crate::resource::host_transition(resource, state);
+            }
+            #[cfg(feature = "diagnostics")]
+            blinks(frame, resources[0].0, resources[0].2, shown);
+            #[cfg(not(feature = "diagnostics"))]
+            let _ = shown;
+        }
     }
     #[cfg(not(windows))]
     let _ = resource;
