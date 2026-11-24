@@ -293,27 +293,30 @@ extern "system" fn present(
 ) -> HRESULT {
     // Read now: the parameters are the title's, maybe on its stack. The
     // frame is shown in the queue's order, after the work before it.
-    let plane = if planes > 0 {
+    let mut resources = Vec::new();
+    if planes > 0 && !plane_parameters.is_null() {
         // SAFETY: the title passes `planes` plane descriptions.
-        unsafe { plane_parameters.as_ref() }
-    } else {
-        None
-    };
-    let resource = plane
-        .filter(|plane| plane.count > 0 && !plane.resources.is_null())
-        // SAFETY: the plane lists `count` resources.
-        .map(|plane| unsafe { *plane.resources })
-        .filter(|resource| !resource.is_null())
-        .map(object::Held::new);
+        let slice = unsafe { std::slice::from_raw_parts(plane_parameters, planes.min(8) as usize) };
+        for plane in slice {
+            if plane.count == 0 || plane.resources.is_null() {
+                continue;
+            }
+            // SAFETY: the plane lists `count` resources.
+            let resource = unsafe { *plane.resources };
+            if !resource.is_null() {
+                resources.push(object::Held::new(resource));
+            }
+        }
+    }
     queue(this)
         .timeline
-        .submit(Op::Run(Box::new(move || show(resource))));
+        .submit(Op::Run(Box::new(move || show(resources))));
     S_OK
 }
 
 /// A present, once the queue's work before it has run: counts the frame
-/// and shows the plane's first resource.
-fn show(resource: Option<object::Held>) {
+/// and composites the planes' first resources.
+fn show(plane_resources: Vec<object::Held>) {
     let frame = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
     if frame.is_power_of_two() {
         let (draws, dispatches) = crate::list::take_counts();
@@ -348,20 +351,13 @@ fn show(resource: Option<object::Held>) {
         crate::capture::dump_targets(frame);
     }
     #[cfg(windows)]
-    if planes > 0
-        && !plane_parameters.is_null()
+    if !plane_resources.is_empty()
         && let Some(host) = crate::host::host()
     {
         const COPY_SOURCE: u32 = 0x800;
-        // SAFETY: the title passes `planes` plane descriptions.
-        let slice = unsafe { std::slice::from_raw_parts(plane_parameters, planes.min(8) as usize) };
-        let mut resources = Vec::with_capacity(slice.len());
-        for plane in slice {
-            if plane.count == 0 || plane.resources.is_null() {
-                continue;
-            }
-            // SAFETY: the plane lists `count` resources.
-            let resource = unsafe { *plane.resources };
+        let mut resources = Vec::with_capacity(plane_resources.len());
+        for held in &plane_resources {
+            let resource = held.get();
             if let Some(texture) = crate::resource::host_resource(resource) {
                 let state = crate::resource::host_transition(resource, COPY_SOURCE)
                     .map_or(COPY_SOURCE, |(_, before)| before);
