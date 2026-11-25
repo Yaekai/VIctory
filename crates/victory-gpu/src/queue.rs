@@ -134,7 +134,6 @@ extern "system" fn execute(_: This, count: u32, lists: *const This) {
 
 /// One plane of a `PresentX` call (0x48-byte stride): frame token,
 /// resource count, and pointer to the plane's resources.
-
 #[repr(C)]
 pub(crate) struct Plane {
     token: u64,
