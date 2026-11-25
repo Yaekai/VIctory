@@ -132,9 +132,9 @@ extern "system" fn execute(_: This, count: u32, lists: *const This) {
     }
 }
 
-/// One plane of a `PresentX` call (`D3D12XBOX_PRESENT_PLANE_PARAMETERS`,
-/// 0x48 bytes): frame token, resource array, view rects, color space,
-/// extended descriptors, and plane flags.
+/// One plane of a `PresentX` call (0x48-byte stride): frame token,
+/// resource count, and pointer to the plane's resources.
+
 #[repr(C)]
 pub(crate) struct Plane {
     token: u64,
